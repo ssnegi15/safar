@@ -1,0 +1,83 @@
+name: Deploy UI to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      VITE_BASE_PATH: ${{ github.event.repository.name == format('{0}.github.io', github.repository_owner) && '/' || format('/{0}/', github.event.repository.name) }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Validate public web configuration
+        shell: bash
+        run: |
+          if [[ -z "$VITE_FIREBASE_API_KEY" ]]; then
+            echo "::error::Set the VITE_FIREBASE_API_KEY Actions repository variable before deploying the UI."
+            exit 1
+          fi
+          if [[ -z "$VITE_FIREBASE_PROJECT_ID" ]]; then
+            echo "::error::Set the VITE_FIREBASE_PROJECT_ID Actions repository variable before deploying the UI."
+            exit 1
+          fi
+          if [[ -z "$VITE_API_BASE_URL" ]]; then
+            echo "::error::Set the VITE_API_BASE_URL Actions repository variable before deploying the UI."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the web app
+        run: pnpm --filter @safar/web build
+
+      - name: Add GitHub Pages SPA fallback
+        run: cp apps/web/dist/index.html apps/web/dist/404.html
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload static UI artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Publish static UI
+        id: deployment
+        uses: actions/deploy-pages@v4
