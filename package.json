@@ -1,0 +1,24 @@
+{
+  "name": "safar",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "devDependencies": {
+    "eslint": "9.17.0",
+    "typescript-eslint": "8.18.0"
+  },
+  "scripts": {
+    "dev": "docker compose up --build",
+    "dev:host": "docker compose up -d postgres firebase-auth && docker compose run --rm db-migrate && corepack pnpm --parallel --filter @safar/api --filter @safar/web dev",
+    "build": "corepack pnpm --recursive build",
+    "lint": "corepack pnpm --recursive lint",
+    "typecheck": "corepack pnpm --recursive typecheck",
+    "test": "corepack pnpm --recursive test",
+    "test:e2e": "corepack pnpm --filter @safar/api test:e2e",
+    "infra:up": "docker compose up -d --build",
+    "infra:down": "docker compose down"
+  }
+}

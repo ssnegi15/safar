@@ -1,0 +1,173 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0-arm64
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./infra/telemetry/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./infra/telemetry/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - backend
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./infra/telemetry/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./infra/telemetry/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./infra/telemetry/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - backend
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: safar
+      POSTGRES_DB: safar
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U safar -d safar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - backend
+    restart: unless-stopped
+
+  db-migrate:
+    image: postgres:16-alpine
+    environment:
+      PGHOST: postgres
+      PGUSER: safar
+      PGDATABASE: safar
+    command:
+      [
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-f",
+        "/migrations/002_local_features.sql",
+        "-f",
+        "/migrations/003_bookings_and_journey.sql",
+        "-f",
+        "/migrations/004_demo_payments.sql",
+      ]
+    volumes:
+      - ./infra/postgres/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: "no"
+
+  firebase-auth:
+    build:
+      context: ./infra/firebase
+    ports:
+      - "127.0.0.1:9099:9099"
+    volumes:
+      - firebase-auth-data:/data
+    networks:
+      - backend
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: development
+      API_PORT: 3000
+      WEB_ORIGIN: http://localhost:5173
+      FIREBASE_PROJECT_ID: demo-safar
+      FIREBASE_AUTH_EMULATOR_HOST: firebase-auth:9099
+      DATABASE_URL: postgresql://safar@postgres:5432/safar
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      firebase-auth:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/v1/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_FIREBASE_API_KEY: demo-api-key
+        VITE_FIREBASE_PROJECT_ID: demo-safar
+        VITE_FIREBASE_AUTH_EMULATOR_URL: http://localhost:9099
+    ports:
+      - "127.0.0.1:5173:8080"
+    networks:
+      - frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  firebase-auth-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  frontend:
+  backend:
